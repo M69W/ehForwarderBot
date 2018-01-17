@@ -23,25 +23,29 @@ Type of the channel, choose between
 * `ChannelType.Master`
 * `ChannelType.Slave`
 
+**supported_message_types** (`set` of `MsgType` constant)  
+A list of supported message types to send **to** the channel.
+
 **queue** (queue.Queue)  
 Global message queue initialized by the parental `__init__` method. This queue is used to deliver messages from slave channels to the master channel.
 
 ## Methods
 Methods below are required to be implemented for respective channel types noted, unless otherwise stated.
 
-**__init__(self, queue)** _(for slave channels)_  
-**__init__(self, queue, slaves)** _(for master channels)_  
-Initialize the channel and log in the account (if necessary) with in this method. `super().__init__(queue)` must always be called in the beginning.
+**__init__(self, queue, mutex)** _(for slave channels)_  
+**__init__(self, queue, mutex, slaves)** _(for master channels)_  
+Initialize the channel with in this method. `super().__init__(queue)` must always be called in the beginning.
 
 Args:
 
 * `queue` (queue.Queue): Global message queue, used for message delivery from slave channels to the master channel.
+* `mutex` (threading.Lock): Global interaction lock. Locked when the channel is having critical interaction with user, including reauthorization.
 * `slaves` (dict): All enabled slave channel objects. Format: `"channel_id": channel_object`.
 
 **poll(self)** _(for both types)_  
-Message polling from your chat platform should be done in this method. When all channels are initialized, `poll` from all enabled channels are called in separated threads, and run concurrently.
+Messages from your chat platform should be polled in this method. When all channels are initialized, `poll` from all enabled channels are called in separated threads, and ran concurrently. While polling for messages, the channel should always check for `self.stop_polling` (bool). When the user gracefully stops EFB, `self.stop_polling` will turn to `True`, and immediately the channel should stop polling and clean up everything necessary.
 
-Method of getting messages which requires extra set up by the user or which may reduce compatibility, including Webhooks, shall be avoided or used as an alternative method.
+Method of getting messages which requires extra set up by the user or which may reduce compatibility, including Webhooks, shall be avoided or only used as an alternative method.
 
 **get_extra_functions(self)** _(ready implemented, for slave channels)_  
 Returns a `dict` of all extra functions of the slave channel, in the format of `"callable_name": callable`.
@@ -58,6 +62,10 @@ Raises:
 * `EFBChatNotFound`
 * `EFBMessageNotFound`
 * `EFBMessageTypeNotSupported`
+* `EFBMessageError`
+
+Returns:  
+The original EFBMsg object `msg` with `uid` property defined.
 
 **get_chats(self)** _(for slave channels)_
 Returns a `list` of `dict`s for available chats in the channel. Each `dict` should be like:

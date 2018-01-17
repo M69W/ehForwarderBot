@@ -1,33 +1,54 @@
-import config
-import queue
-import threading
-import logging
 import argparse
-from daemon import Daemon
+import logging
+import queue
+import signal
+import sys
+import threading
 
-__version__ = "1.1 build 20161226"
+import config
+from channel import EFBChannel
+
+if sys.version_info.major < 3:
+    raise Exception("Python 3.x is required. Your version is %s." % sys.version)
+
+__version__ = "1.6.6"
 
 parser = argparse.ArgumentParser(description="EH Forwarder Bot is an extensible chat tunnel framework which allows "
                                              "users to contact people from other chat platforms, and ultimately "
                                              "remotely control their accounts in other platforms.",
-                                 epilog="Support: https://github.com/blueset/ehForwarderBot")
+                                 epilog="GitHub: https://github.com/blueset/ehForwarderBot")
 parser.add_argument("-v", default=0, action="count",
-                    help="Increase verbosity.")
+                    help="Increase verbosity. -vv at most.")
 parser.add_argument("-V", "--version", action="version",
                     help="Show version number and exit.",
-                    version="EFB Forwarder Bot %s" % __version__)
-parser.add_argument("-d", choices=["start", "stop", "restart"],
-                    help="Run as a daemon.")
+                    version="EH Forwarder Bot %s" % __version__)
 parser.add_argument("-l", "--log",
                     help="Set log file path.")
 
 args = parser.parse_args()
 
 q = None
-slaves = None
+mutex = None
+slaves = []
 master = None
 master_thread = None
 slave_threads = None
+
+
+def stop_gracefully(*args, **kwargs):
+    l = logging.getLogger("ehForwarderBot")
+    if isinstance(master, EFBChannel):
+        master.stop_polling = True
+        l.debug("Stop signal sent to master: %s" % master.channel_name)
+        while master_thread.is_alive():
+            pass
+    for i in slaves:
+        if isinstance(slaves[i], EFBChannel):
+            slaves[i].stop_polling = True
+            l.debug("Stop signal sent to slave: %s" % slaves[i].channel_name)
+            while slave_threads[i].is_alive():
+                pass
+    sys.exit(0)
 
 
 def set_log_file(fn):
@@ -38,7 +59,7 @@ def set_log_file(fn):
         fn (str): File name
     """
     fh = logging.FileHandler(fn, 'a')
-    f = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s \n %(message)s')
+    f = logging.Formatter('%(asctime)s: %(name)s [%(levelname)s]\n    %(message)s')
     fh.setFormatter(f)
     l = logging.getLogger()
     for hdlr in l.handlers[:]:
@@ -50,18 +71,25 @@ def init():
     """
     Initialize all channels.
     """
-    global q, slaves, master, master_thread, slave_threads
-    # Init Queue
+    global q, slaves, master, master_thread, slave_threads, mutex
+    # Init Queue, thread lock
     q = queue.Queue()
+    mutex = threading.Lock()
     # Initialize Plug-ins Library
     # (Load libraries and modules and init them with Queue `q`)
+    l = logging.getLogger("ehForwarderBot")
     slaves = {}
     for i in config.slave_channels:
+        l.critical("\x1b[0;37;46m Initializing slave %s... \x1b[0m" % str(i))
         obj = getattr(__import__(i[0], fromlist=i[1]), i[1])
-        slaves[obj.channel_id] = obj(q)
+        slaves[obj.channel_id] = obj(q, mutex)
+        l.critical("\x1b[0;37;42m Slave channel %s (%s) initialized. \x1b[0m" % (obj.channel_name, obj.channel_id))
+    l.critical("\x1b[0;37;46m Initializing master %s... \x1b[0m" % str(config.master_channel))
     master = getattr(__import__(config.master_channel[0], fromlist=config.master_channel[1]), config.master_channel[1])(
-        q, slaves)
+        q, mutex, slaves)
+    l.critical("\x1b[0;37;42m Master channel %s (%s) initialized. \x1b[0m" % (master.channel_name, master.channel_id))
 
+    l.critical("\x1b[1;37;42m All channels initialized. \x1b[0m")
     master_thread = threading.Thread(target=master.poll)
     slave_threads = {key: threading.Thread(target=slaves[key].poll) for key in slaves}
 
@@ -76,45 +104,33 @@ def poll():
         slave_threads[i].start()
 
 
-class EFBDaemon(Daemon):
-    def __init__(self, pidfile, run):
-        super().__init__(pidfile)
-        self.run = run
-
 PID = "/tmp/efb.pid"
 LOG = "EFB.log"
 
 if getattr(args, "V", None):
     print("EH Forwarder Bot\n"
-          "Version: Be")
+          "Version: %s" % __version__)
 else:
+    if args.v == 0:
+        level = logging.ERROR
+    elif args.v == 1:
+        level = logging.INFO
+    else:
+        level = logging.DEBUG
+    logging.basicConfig(format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d]\n     %(message)s',
+                        datefmt='%d-%m-%Y:%H:%M:%S',
+                        level=level)
     logging.getLogger('requests').setLevel(logging.CRITICAL)
     logging.getLogger('urllib3').setLevel(logging.CRITICAL)
     logging.getLogger('telegram.bot').setLevel(logging.CRITICAL)
-    if args.v == 0:
-        logging.basicConfig(level=logging.ERROR)
-    elif args.v == 1:
-        logging.basicConfig(level=logging.INFO)
-    elif args.v >= 2:
-        logging.basicConfig(level=logging.DEBUG)
-        logging.basicConfig(level=logging.DEBUG)
+    logging.getLogger('telegram.vendor.ptb_urllib3').setLevel(logging.CRITICAL)
+
+    signal.signal(signal.SIGINT, stop_gracefully)
+    signal.signal(signal.SIGTERM, stop_gracefully)
 
     if getattr(args, "log", None):
         LOG = args.log
         set_log_file(LOG)
 
-    if getattr(args, "d", None):
-        d = EFBDaemon(PID, poll)
-        set_log_file(LOG)
-        if args.d == "start":
-            init()
-            d.start()
-        elif args.d == "stop":
-            d.stop()
-        elif args.d == "restart":
-            d.stop()
-            init()
-            d.start()
-    else:
-        init()
-        poll()
+    init()
+    poll()

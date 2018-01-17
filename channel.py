@@ -1,3 +1,5 @@
+from abc import ABCMeta, abstractmethod
+
 # Constants Objects
 
 class MsgType:
@@ -33,14 +35,26 @@ class ChannelType:
 
 
 class EFBChannel:
+    __metaclass__ = ABCMeta
+
     channel_name = "Empty Channel"
     channel_emoji = "?"
     channel_id = "emptyChannel"
     channel_type = ChannelType.Slave
     queue = None
+    supported_message_types = set()
+    stop_polling = False
 
-    def __init__(self, queue):
+    def __init__(self, queue, mutex):
+        """
+        Initialize a channel.
+
+        Args:
+            queue (queue.Queue): Global message queue.
+            mutex (threading.Lock): Global interaction thread lock.
+        """
         self.queue = queue
+        self.mutex = mutex
 
     def get_extra_functions(self):
         """Get a list of extra functions
@@ -57,15 +71,47 @@ class EFBChannel:
                 methods[mName] = m
         return methods
 
-    def send_message(self, *args, **kwargs):
-        return "Not implemented"
+    @abstractmethod
+    def send_message(self, msg):
+        """
+        Send message to slave channels.
 
-    def poll(self, *args, **kwargs):
-        return "Not implemented"
+        Args:
+            msg (EFBMsg): Message object to be sent.
 
-    def get_chats(self, *args, **kwargs):
-        return "Not implemented"
+        Returns:
+            EFBMsg: The same message object with message ID.
+        """
+        raise NotImplementedError()
 
+    @abstractmethod
+    def poll(self):
+        raise NotImplementedError()
+
+    @abstractmethod
+    def get_chats(self):
+        """
+        Return a list of available chats in the channel.
+
+        Returns:
+            list of dict: a list of available chats in the channel.
+        """
+        raise NotImplementedError()
+
+    @abstractmethod
+    def get_chat(self, chat_uid):
+        """
+        Return the standard chat dict of the selected chat.
+        Args:
+            chat_uid (str): UID of the chat.
+
+        Returns:
+            dict: the standard chat dict of the chat.
+        
+        Raises:
+            KeyError: Chat is not found in the channel.
+        """
+        raise NotImplementedError()
 
 class EFBMsg:
     """A message.
@@ -76,7 +122,7 @@ class EFBMsg:
         channel_id (str): ID for the source channel
         channel_name (str): Name of the source channel
         destination (dict): Destination (may be a user or a group)
-        member (dict): Author of this msg in a group. `None` for priv msgs.
+        member (dict): Author of this msg in a group. `None` for private messages.
         origin (dict): Origin (may be a user or a group)
         source (MsgSource): Source of message: User/Group/System
         target (dict): Target (refers to @ messages and "reply to" messages.)
@@ -85,8 +131,9 @@ class EFBMsg:
         uid (str): Unique ID of message
         url (str): URL of multimedia file/Link share. `None` if N/A
         path (str): Local path of multimedia file. `None` if N/A
-        file (file): File object to multimedia object, type "ra". `None` if N/A
+        file (file): File object to multimedia file, type "ra". `None` if N/A
         mime (str): MIME type of the file. `None` if N/A
+        filename (str): File name of the multimedia file. `None` if N/A
 
     `target`:
         There are 3 types of targets: `Member`, `Message`, and `Substitution`
@@ -216,12 +263,13 @@ class EFBMsg:
         'uid': 'Destination UID',
     }
     target = None
-    uid = "Message UID"
-    text = "Message"
+    uid = None
+    text = ""
     url = None
     path = None
     file = None
     mime = None
+    filename = None
     attributes = {}
 
     def __init__(self, channel=None):
